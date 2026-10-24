@@ -22,6 +22,7 @@ place.
 | DEC-2 The agent never deletes branches | Decided |
 | DEC-3 One guard module, three entry points | Decided |
 | DEC-4 Model names stay out of commit text | Decided |
+| DEC-5 The bootstrap tests run only in the template | Decided |
 
 Statuses: Open, Proposed, Decided, Decided by measurement, Amended,
 Withdrawn.
@@ -156,6 +157,36 @@ Agents like to sign their work; the hook will refuse them now and then.
 
 ### What would reverse it
 A reason to trace changes to models that trailers cannot serve.
+
+## DEC-5 — The bootstrap tests run only in the template
+
+Decided 2026-10-24 by the template's owner, after review of the first
+pull request.
+
+### What was wrong
+tools/tests/test_bootstrap.py copies the repository and runs
+scripts/bootstrap.sh in the copy. In a bootstrapped project the files are
+the project's own: a kept AGENTS.md or a moved README failed those tests on
+day one, so the pre-push hook refused every push. The tests also copied the
+whole working tree, node_modules and build output included, on every push.
+
+### The decision
+The bootstrap tests skip themselves when fasttrack.conf says
+`BOOTSTRAPPED="yes"`. The guard's own tests still run in every project,
+because the hooks there depend on the guard.
+
+### Alternatives rejected
+- Delete the bootstrap tests during bootstrap. A project that later updates
+  its scripts from the template would lose the tests with no record.
+- Make the tests restore the template state first. They would still test
+  the project's files, not the template's.
+
+### What it costs, stated plainly
+A project that edits its copy of scripts/bootstrap.sh gets no test of that
+edit.
+
+### What would reverse it
+Projects that keep re-running bootstrap after changing it.
 
 ## Convention history
 

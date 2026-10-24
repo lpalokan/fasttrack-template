@@ -108,22 +108,51 @@ def protected_branches(conf):
 # --- agent hook --------------------------------------------------------------
 
 
-def split_segments(command):
-    """Split a shell command into simple commands. Deliberately naive: it
-    over-splits quoted text, which can only add checks, never remove one."""
-    return [s for s in re.split(r"&&|\|\||[;|\n]", command) if s.strip()]
+PREFIXES = ("sudo", "command", "exec", "time", "nohup", "env")
 
 
-def tokenize(segment):
-    try:
-        tokens = shlex.split(segment)
-    except ValueError:
-        tokens = segment.split()
-    while tokens and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
-        tokens = tokens[1:]
-    if tokens and tokens[0] in ("sudo", "command", "exec", "time"):
-        tokens = tokens[1:]
+def strip_prefixes(tokens):
+    """Drop what runs before the real program: FOO=bar, env -i, sudo ..."""
+    while tokens:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
+            tokens = tokens[1:]
+        elif tokens[0] in PREFIXES:
+            tokens = tokens[1:]
+            while tokens and tokens[0].startswith("-"):
+                tokens = tokens[1:]
+        else:
+            break
     return tokens
+
+
+def simple_commands(command):
+    """Split a shell command line into simple commands, each a token list.
+
+    Quoted text stays whole, so a commit message that mentions a command is
+    not mistaken for one. When the line cannot be parsed (an unterminated
+    quote), it falls back to a naive split, which over-checks rather than
+    under-checks. This reads text, so it is a nudge, not a boundary
+    (docs/decisions.md, DEC-3).
+    """
+    commands = []
+    for line in command.splitlines():
+        try:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except ValueError:
+            for segment in re.split(r"&&|\|\||[;|&()]", line):
+                commands.append(segment.split())
+            continue
+        current = []
+        for token in tokens:
+            if token and set(token) <= set("();&|"):
+                commands.append(current)
+                current = []
+            else:
+                current.append(token)
+        commands.append(current)
+    return [c for c in (strip_prefixes(c) for c in commands) if c]
 
 
 def short_flags(tokens):
@@ -149,25 +178,40 @@ def branch_name(ref):
     return ref
 
 
+GLOBAL_WITH_VALUE = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path")
+
+
 def check_git(args, cwd, protected):
-    # Skip git's global options: git -C dir, git -c key=value, git --no-pager ...
-    i = 0
+    # Read git's global options: git -C dir, git -c key=value, git --git-dir x ...
+    i, workdir, hooks_off = 0, cwd, False
     while i < len(args) and args[i].startswith("-"):
-        i += 2 if args[i] in ("-C", "-c") else 1
+        option = args[i]
+        if option in GLOBAL_WITH_VALUE and i + 1 < len(args):
+            value = args[i + 1]
+            if option == "-C":
+                workdir = os.path.join(workdir, value) if workdir else value
+            if option == "-c" and value.lower().startswith("core.hookspath"):
+                hooks_off = True
+            i += 2
+        else:
+            i += 1
     if i >= len(args):
         return []
     sub, rest = args[i], args[i + 1:]
     flags = short_flags(rest)
     reasons = []
 
-    if "--no-verify" in rest or (sub == "commit" and "n" in flags):
+    if hooks_off or "--no-verify" in rest or (sub == "commit" and "n" in flags):
         reasons.append(NO_VERIFY)
 
-    if sub == "commit" and "--amend" in rest and head_is_pushed(cwd):
+    if sub == "commit" and "--amend" in rest and head_is_pushed(workdir):
         reasons.append(AMEND)
 
     if sub == "branch" and ("--delete" in rest or flags & {"d", "D"}):
         reasons.append(DELETE)
+
+    if sub == "push" and ("--dry-run" in rest or "n" in flags):
+        return reasons
 
     if sub == "push":
         positional = []
@@ -186,7 +230,7 @@ def check_git(args, cwd, protected):
             "--force" in rest
             or "f" in flags
             or any(t.startswith("--force-with-lease") for t in rest)
-            or any(r.startswith("+") for r in refspecs)
+            or any(p.startswith("+") for p in positional)
         )
         if forced:
             reasons.append(FORCE)
@@ -204,10 +248,7 @@ def check_agent_call(tool_name, tool_input, cwd=None, protected=DEFAULT_PROTECTE
     tool_input = tool_input or {}
     if tool_name == "Bash":
         reasons = []
-        for segment in split_segments(tool_input.get("command", "")):
-            tokens = tokenize(segment)
-            if not tokens:
-                continue
+        for tokens in simple_commands(tool_input.get("command", "")):
             program = os.path.basename(tokens[0])
             if program == "git":
                 reasons += check_git(tokens[1:], cwd, protected)
@@ -245,7 +286,12 @@ MODEL_NAME = re.compile(
     r"|gemini[ -]?\d|llama[ -]?\d|mistral[ -](?:large|medium|small|\d))",
     re.IGNORECASE,
 )
-TRAILER = re.compile(r"^[A-Za-z][A-Za-z0-9-]*: \S")
+# Trailer keys are hyphenated (Co-Authored-By, Signed-off-by) or one of a few
+# known words, so a body line such as "Why: ..." still counts as a body.
+TRAILER = re.compile(
+    r"^(?:[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+|Characterises|Fixes|Closes|Resolves|Refs): \S"
+)
+SCISSORS = re.compile(r"^# -+ >8 -+$")
 
 
 def split_trailers(body_lines):
@@ -265,7 +311,13 @@ def split_trailers(body_lines):
 
 
 def check_commit_message(text):
-    lines = [l.rstrip() for l in text.splitlines() if not l.startswith("#")]
+    raw = text.splitlines()
+    # git commit -v appends the diff below a scissors line; it is not the message.
+    for index, line in enumerate(raw):
+        if SCISSORS.match(line):
+            raw = raw[:index]
+            break
+    lines = [l.rstrip() for l in raw if not l.startswith("#")]
     while lines and not lines[0].strip():
         lines.pop(0)
     if not lines:
@@ -330,20 +382,34 @@ def check_push_updates(lines, protected):
     return reasons
 
 
-def pr_has_merged(branch, cwd=None):
-    """True if GitHub shows a merged PR for this branch; None when gh can't tell."""
+def merged_pr_heads(branch, cwd=None):
+    """Head commits of merged pull requests from this branch name, or None
+    when gh is missing or cannot reach GitHub."""
     if not shutil.which("gh"):
         return None
     result = subprocess.run(
-        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "number"],
+        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "headRefOid"],
         cwd=cwd, capture_output=True, text=True,
     )
     if result.returncode != 0:
         return None
     try:
-        return bool(json.loads(result.stdout or "[]"))
-    except ValueError:
+        return [pr["headRefOid"] for pr in json.loads(result.stdout or "[]")]
+    except (ValueError, KeyError, TypeError):
         return None
+
+
+def extends_merged_head(repo, local_sha, merged_heads):
+    """True if the commit being pushed builds on a merged pull request's head.
+    A new branch that only reuses a merged branch's name does not."""
+    for head in merged_heads:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", head, local_sha],
+            cwd=repo, capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            return True
+    return False
 
 
 # --- bites ------------------------------------------------------------------
@@ -371,7 +437,7 @@ def bites(repo, base, patterns, test_cmd, share=(), timeout=600):
     violation, unless a commit names it in a 'Characterises:' line.
     Returns (violations, report lines).
     """
-    added = git(repo, "diff", "--name-only", "--diff-filter=A", base, "HEAD").stdout.split()
+    added = git(repo, "diff", "--name-only", "-z", "--diff-filter=A", base, "HEAD").stdout.split("\0")
     tests = [f for f in added if any(fnmatch.fnmatch(f, p) for p in patterns)]
     short = base[:12]
     if not tests:
@@ -403,9 +469,9 @@ def bites(repo, base, patterns, test_cmd, share=(), timeout=600):
                 report.append(f"bites: {test} exempt, named in a Characterises: line")
                 continue
             command = (
-                test_cmd.replace("{file}", test)
-                .replace("{dir}", os.path.dirname(test) or ".")
-                .replace("{stem}", Path(test).stem)
+                test_cmd.replace("{file}", shlex.quote(test))
+                .replace("{dir}", shlex.quote(os.path.dirname(test) or "."))
+                .replace("{stem}", shlex.quote(Path(test).stem))
             )
             try:
                 result = subprocess.run(
@@ -492,7 +558,10 @@ def main(argv):
             parts = line.split()
             if len(parts) == 4 and parts[1] != ZERO_SHA:
                 branch = branch_name(parts[2])
-                if branch not in protected and pr_has_merged(branch):
+                if branch in protected:
+                    continue
+                heads = merged_pr_heads(branch)
+                if heads and extends_merged_head(repo_root(), parts[1], heads):
                     reasons.append(MERGED_BRANCH.format(branch=branch))
         return fail(reasons)
 

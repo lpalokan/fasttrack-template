@@ -55,7 +55,9 @@ with `--stack other` and your own commands; see `scripts/bootstrap.sh
 
 Clone this template next to your project and copy the baseline in. Files you
 already have are never overwritten; the script lists them so you can merge by
-hand.
+hand. If one of the files the hooks and CI run already exists (for example
+your own `scripts/check.sh`), the script stops before copying anything and
+names it, so the hooks never run your file by mistake.
 
 ```bash
 git clone https://github.com/lpalokan/fasttrack-template ../fasttrack-template
@@ -111,6 +113,10 @@ line, and bites lets it through with a record:
 ```text
 Characterises: tests/test_rounding.py
 ```
+
+Bites checks that a new test fails on the old code, not why it fails; the red
+run in the pull request shows the reason. docs/enforcement.md lists this and
+the mechanisms' other known limits.
 
 ## Make it yours
 

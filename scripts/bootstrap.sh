@@ -35,23 +35,18 @@ EOF
 name="" description="" owner="" stack="" into="" yes=""
 lint="" fast="" full="" test_cmd="" test_patterns="" share=""
 given=" "
-passthrough=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --into) into=$2; shift 2; continue ;;
     -h|--help) usage; exit 0 ;;
-  esac
-  passthrough+=("$1")
-  case "$1" in
     --yes|-y) yes=1; shift; continue ;;
   esac
   if [ $# -lt 2 ]; then
     echo "bootstrap: $1 needs a value" >&2
     exit 2
   fi
-  passthrough+=("$2")
   case "$1" in
+    --into) into=$2 ;;
     --name) name=$2 ;;
     --description) description=$2 ;;
     --owner) owner=$2 ;;
@@ -67,20 +62,35 @@ while [ $# -gt 0 ]; do
   shift 2
 done
 
-# --- into an existing repository: copy, never overwrite, then run there ---
+# The files the hooks and CI run. Bootstrap never leaves one of yours in
+# their place, because the hooks would then run your file with our meaning.
+mechanisms="fasttrack.conf tools/guard.py scripts/bootstrap.sh scripts/setup.sh
+scripts/check.sh scripts/bites.sh .githooks/commit-msg .githooks/pre-push"
+
+# --- into an existing repository: copy, never overwrite, then work there ---
 if [ -n "$into" ]; then
   target=$(cd "$into" && pwd)
   if ! git -C "$target" rev-parse --git-dir >/dev/null 2>&1; then
     echo "bootstrap: $into is not a git repository" >&2
     exit 2
   fi
-  kept=()
+  clashes=""
+  for file in $mechanisms; do
+    if [ -e "$target/$file" ]; then clashes="$clashes $file"; fi
+  done
+  if [ -n "$clashes" ]; then
+    echo "bootstrap: these files already exist in $into, and the baseline's hooks and CI run them:" >&2
+    for file in $clashes; do echo "  $file" >&2; done
+    echo "Rename or remove yours, then run bootstrap again. Nothing was copied." >&2
+    exit 2
+  fi
+  kept=""
   while IFS= read -r file; do
     case "$file" in
       README.md|LICENSE) continue ;;
     esac
     if [ -e "$target/$file" ]; then
-      kept+=("$file")
+      kept="$kept $file"
       continue
     fi
     mkdir -p "$target/$(dirname "$file")"
@@ -90,15 +100,21 @@ if [ -n "$into" ]; then
   if [ ! -e "$target/docs/fasttrack.md" ]; then
     cp "$template/README.md" "$target/docs/fasttrack.md"
   fi
-  if [ ${#kept[@]} -gt 0 ]; then
+  if [ -n "$kept" ]; then
     echo "bootstrap: kept your existing files; merge the baseline's versions by hand:"
-    printf '  %s\n' "${kept[@]}"
+    for file in $kept; do echo "  $file"; done
   fi
-  cd "$target"
-  exec bash scripts/bootstrap.sh "${passthrough[@]}"
+  workdir=$target
+else
+  workdir=$template
 fi
 
-cd "$template"
+cd "$workdir"
+
+if [ "$(python3 tools/guard.py conf BOOTSTRAPPED)" = "yes" ]; then
+  echo "bootstrap: this project is already bootstrapped (fasttrack.conf). Edit fasttrack.conf and AGENTS.md directly, or set BOOTSTRAPPED=\"no\" to start over." >&2
+  exit 2
+fi
 
 has() {
   case "$given" in *" $1 "*) return 0 ;; esac
@@ -134,6 +150,23 @@ detect_owner() {
     echo "${USER:-owner}"
   fi
 }
+
+detect_default_branch() {
+  local ref
+  ref=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  if [ -n "$ref" ]; then
+    echo "${ref#origin/}"
+    return 0
+  fi
+  ref=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+  echo "${ref:-main}"
+}
+
+default_branch=$(detect_default_branch)
+protected=$default_branch
+for branch in main master; do
+  if [ "$branch" != "$default_branch" ]; then protected="$protected $branch"; fi
+done
 
 ask name "Project name" "$(basename "$PWD")"
 ask description "What is it, in one or two sentences" ""
@@ -206,8 +239,8 @@ PROJECT_NAME="$name"
 OWNER="$owner"
 STACK="$stack"
 BOOTSTRAPPED="yes"
-DEFAULT_BRANCH="main"
-PROTECTED_BRANCHES="main master"
+DEFAULT_BRANCH="$default_branch"
+PROTECTED_BRANCHES="$protected"
 
 # The one definition of green (scripts/check.sh).
 # LINT_CMD runs everywhere. FAST_TEST_CMD runs before every push, so keep it
@@ -229,18 +262,23 @@ EOF
 # Describe the project where every session reads it, record the decision,
 # and move the template's README aside. Each step looks for its marker, so a
 # file you already had is left alone.
-python3 - "$name" "$description" "$stack" "$today" <<'PY'
+python3 - "$name" "$description" "$stack" "$today" "$default_branch" <<'PY'
 import re
 import sys
 from pathlib import Path
 
-name, description, stack, today = sys.argv[1:]
+name, description, stack, today, default_branch = sys.argv[1:]
 
 agents = Path("AGENTS.md")
 if agents.exists():
     text = agents.read_text(encoding="utf-8")
     block = f"<!-- fasttrack:project -->\n**{name}**: {description}\n<!-- /fasttrack:project -->"
-    new = re.sub(r"<!-- fasttrack:project -->.*?<!-- /fasttrack:project -->", block, text, flags=re.S)
+    new = re.sub(
+        r"<!-- fasttrack:project -->.*?<!-- /fasttrack:project -->",
+        lambda _match: block,
+        text,
+        flags=re.S,
+    )
     if new != text:
         agents.write_text(new, encoding="utf-8")
     else:
@@ -253,6 +291,11 @@ if decisions.exists():
     if marker in text:
         line = f"- Amended {today}: bootstrapped for {name} (stack: {stack}) by scripts/bootstrap.sh."
         decisions.write_text(text.replace(marker, marker + "\n" + line), encoding="utf-8")
+
+ci = Path(".github/workflows/ci.yml")
+if ci.exists():
+    text = ci.read_text(encoding="utf-8")
+    ci.write_text(text.replace("branches: [main]", f"branches: [{default_branch}]"), encoding="utf-8")
 
 readme = Path("README.md")
 if readme.exists() and "<!-- fasttrack:template-readme -->" in readme.read_text(encoding="utf-8"):
