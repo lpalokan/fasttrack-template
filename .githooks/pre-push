@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Before anything leaves the machine: the push rules, the fast checks, bites.
+set -eu
+root=$(git rev-parse --show-toplevel)
+python3 "$root/tools/guard.py" pre-push "$@"
+"$root/scripts/check.sh" --fast
+"$root/scripts/bites.sh"

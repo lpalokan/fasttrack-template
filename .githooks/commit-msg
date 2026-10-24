@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Commit messages: an imperative subject under 70 characters, a body that
+# says why, and no model name in the text.
+exec python3 "$(git rev-parse --show-toplevel)/tools/guard.py" commit-msg "$1"
