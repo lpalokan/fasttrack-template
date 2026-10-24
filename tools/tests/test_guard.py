@@ -87,6 +87,31 @@ class AgentHookRefusals(unittest.TestCase):
         ]:
             self.assertAllowed(command)
 
+    def test_quoted_text_is_not_a_command(self):
+        self.assertAllowed("git commit -m 'Explain; git branch -D was used' -m 'Why.'")
+        self.assertAllowed('gh pr create --body "Never run gh pr merge yourself"')
+
+    def test_a_dry_run_push_is_allowed(self):
+        self.assertAllowed("git push origin main --dry-run")
+        self.assertAllowed("git push -n origin main")
+
+    def test_more_ways_to_force_push_are_refused(self):
+        for command in [
+            "env git push -f",
+            "(git push -f)",
+            "git --git-dir .git push -f",
+            "git push +feature",
+        ]:
+            self.assertRefused(command, "rewrite pushed work")
+
+    def test_switching_hooks_off_by_config_is_refused(self):
+        self.assertRefused("git -c core.hooksPath=/dev/null commit -m 'Add x'", "skip the git hooks")
+
+    def test_amend_checks_the_directory_given_with_C(self):
+        with mock.patch.object(guard, "head_is_pushed", return_value=False) as pushed:
+            guard.check_agent_call("Bash", {"command": "git -C other/repo commit --amend"}, cwd="/work")
+        pushed.assert_called_once_with(os.path.join("/work", "other/repo"))
+
     def test_unparseable_commands_still_get_checked(self):
         self.assertRefused("git push -f 'unterminated", "rewrite pushed work")
 
@@ -132,6 +157,21 @@ class CommitMessages(unittest.TestCase):
         message = "Update CLAUDE.md with the merge rule\n\nClaude kept asking.\n"
         self.assertEqual(guard.check_commit_message(message), [])
 
+    def test_the_verbose_diff_below_the_scissors_is_not_the_message(self):
+        scissors = (
+            "# ------------------------ >8 ------------------------\n"
+            "# Do not modify or remove the line above.\n"
+            "diff --git a/x b/x\n+model = 'gpt-4o'\n"
+        )
+        self.assertEqual(guard.check_commit_message(self.good + scissors), [])
+        reasons = guard.check_commit_message("Add parser\n" + scissors)
+        self.assertTrue(any("body" in r for r in reasons), reasons)
+
+    def test_a_one_line_body_in_key_value_form_is_still_a_body(self):
+        self.assertEqual(guard.check_commit_message("Fix parser\n\nWhy: it dropped negatives.\n"), [])
+        reasons = guard.check_commit_message("Add parser\n\nNote: drafted with GPT-4o.\n")
+        self.assertTrue(any("model name" in r for r in reasons), reasons)
+
     def test_merge_revert_and_fixup_commits_are_exempt(self):
         for subject in ["Merge branch 'main' into feature", "Revert \"Add parser\"", "fixup! Add parser"]:
             self.assertEqual(guard.check_commit_message(subject + "\n"), [], subject)
@@ -148,6 +188,84 @@ class PushUpdates(unittest.TestCase):
     def test_push_to_feature_branch_is_allowed(self):
         lines = [f"refs/heads/feature {self.sha} refs/heads/feature {self.zero}"]
         self.assertEqual(guard.check_push_updates(lines, ["main"]), [])
+
+
+class Repo(unittest.TestCase):
+    """A throwaway repository with a bare remote."""
+
+    def git(self, *args, cwd=None):
+        return subprocess.run(
+            ["git", *args], cwd=cwd or self.repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    def commit(self, message, name="f.txt", content=None):
+        Path(self.repo, name).write_text(content if content is not None else message)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+        return self.git("rev-parse", "HEAD")
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        self.remote = root / "remote.git"
+        self.repo = root / "work"
+        self.repo.mkdir()
+        subprocess.run(["git", "init", "-q", "--bare", str(self.remote)], check=True)
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.email", "test@example.com")
+        self.git("config", "user.name", "Test")
+        self.git("remote", "add", "origin", str(self.remote))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+
+class PushedWork(Repo):
+    def test_amending_a_really_pushed_commit_is_refused(self):
+        self.commit("Add a\n\nWhy.")
+        self.git("push", "-q", "origin", "main")
+        reasons = guard.check_agent_call("Bash", {"command": "git commit --amend --no-edit"}, cwd=str(self.repo))
+        self.assertTrue(any("amend" in r for r in reasons), reasons)
+        self.commit("Add b\n\nWhy.", name="b.txt")
+        self.assertEqual(
+            guard.check_agent_call("Bash", {"command": "git commit --amend --no-edit"}, cwd=str(self.repo)), []
+        )
+
+    def test_a_push_that_extends_a_merged_pull_request_is_detected(self):
+        merged_head = self.commit("Add a\n\nWhy.")
+        later = self.commit("Add b\n\nWhy.", name="b.txt")
+        self.assertTrue(guard.extends_merged_head(str(self.repo), later, [merged_head]))
+
+    def test_a_new_branch_that_reuses_a_merged_name_is_not_refused(self):
+        self.commit("Add a\n\nWhy.")
+        self.git("checkout", "-q", "--orphan", "fresh")
+        fresh = self.commit("Start fresh\n\nWhy.", name="c.txt")
+        unrelated = "f" * 40
+        self.assertFalse(guard.extends_merged_head(str(self.repo), fresh, [unrelated]))
+
+
+class EntryPoints(Repo):
+    script = str(Path(__file__).resolve().parents[1] / "guard.py")
+
+    def run_guard(self, *args, stdin=""):
+        return subprocess.run(
+            [sys.executable, self.script, *args], cwd=self.repo, input=stdin, capture_output=True, text=True
+        )
+
+    def test_pre_push_reads_protected_branches_from_the_conf(self):
+        Path(self.repo, "fasttrack.conf").write_text('PROTECTED_BRANCHES="develop"\n')
+        line = f"refs/heads/x {'a' * 40} refs/heads/develop {'0' * 40}\n"
+        result = self.run_guard("pre-push", "origin", "url", stdin=line)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("develop", result.stderr)
+
+    def test_commit_range_names_the_offending_commit(self):
+        self.commit("Add a\n\nWhy.")
+        base = self.git("rev-parse", "HEAD")
+        bad = self.commit("Added b")
+        result = self.run_guard("commit-range", f"{base}..HEAD")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(bad[:12], result.stderr)
 
 
 class Characterises(unittest.TestCase):
@@ -239,8 +357,15 @@ class Bites(unittest.TestCase):
         )
         self.add_test("test_sub.py", "def test_sub(self):\n    self.assertEqual(calc.sub(3, 1), 2)\n")
         self.commit("Add sub\n\nNeeded for refunds.")
-        violations, _ = self.run_bites()
+        violations, report = self.run_bites()
         self.assertEqual(violations, [])
+        self.assertTrue(any("tests/test_sub.py fails on" in line for line in report), report)
+
+    def test_a_path_with_spaces_reaches_the_test_command_whole(self):
+        (self.repo / "tests" / "test_with space.py").write_text("x = 1\n")
+        self.commit("Add a spaced test\n\nNames happen.")
+        violations, _ = guard.bites(str(self.repo), self.base, ["tests/test_*.py"], "test -f {file}")
+        self.assertEqual(len(violations), 1, violations)
 
     def test_a_test_that_passes_on_the_old_code_is_refused(self):
         self.add_test("test_add.py", "def test_add(self):\n    self.assertEqual(calc.add(1, 1), 2)\n")

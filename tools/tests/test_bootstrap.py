@@ -1,4 +1,9 @@
-"""Tests for scripts/bootstrap.sh, run against a throwaway copy of the template."""
+"""Tests for scripts/bootstrap.sh, run against a throwaway copy of the template.
+
+They test the template, so they run only in the template repository. Once a
+project is bootstrapped its files are its own, and these tests would fail on
+its choices and copy its whole tree on every push (docs/decisions.md, DEC-5).
+"""
 
 import shutil
 import subprocess
@@ -11,12 +16,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import guard  # noqa: E402
 
 TEMPLATE = Path(__file__).resolve().parents[2]
+BOOTSTRAPPED = guard.parse_conf(TEMPLATE / "fasttrack.conf").get("BOOTSTRAPPED") == "yes"
 
 
 def run(cmd, cwd, check=True):
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=check)
 
 
+@unittest.skipIf(BOOTSTRAPPED, "template tests; this project is already bootstrapped")
 class TemplateCopy(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -25,12 +32,6 @@ class TemplateCopy(unittest.TestCase):
         shutil.copytree(
             TEMPLATE, self.repo, ignore=shutil.ignore_patterns(".git", "__pycache__")
         )
-        # In a project that was already bootstrapped, the template's README
-        # lives in docs/fasttrack.md; put it back so the copy is a template.
-        moved = self.repo / "docs" / "fasttrack.md"
-        if moved.exists():
-            shutil.copy(moved, self.repo / "README.md")
-            moved.unlink()
         run(["git", "init", "-q", "-b", "main"], self.repo)
         run(["git", "add", "-A"], self.repo)
 
@@ -104,6 +105,31 @@ class FreshFork(TemplateCopy):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("stack", result.stderr)
 
+    def test_a_description_is_taken_literally(self):
+        result = self.bootstrap(
+            "--name", "x", "--description", r"Parses C:\Users paths \1 & more.",
+            "--owner", "o", "--stack", "python", "--yes",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(r"Parses C:\Users paths \1 & more.", (self.repo / "AGENTS.md").read_text())
+
+    def test_running_it_twice_is_refused_and_changes_nothing(self):
+        self.bootstrap("--name", "first", "--description", "One.", "--owner", "o", "--stack", "go", "--yes")
+        before = (self.repo / "fasttrack.conf").read_text()
+        result = self.bootstrap("--name", "second", "--description", "Two.", "--owner", "o", "--stack", "node", "--yes")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("already bootstrapped", result.stderr)
+        self.assertEqual((self.repo / "fasttrack.conf").read_text(), before)
+
+    def test_the_default_branch_is_detected(self):
+        run(["git", "branch", "-m", "develop"], self.repo)
+        result = self.bootstrap("--name", "x", "--description", "X.", "--owner", "o", "--stack", "go", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        conf = guard.parse_conf(self.repo / "fasttrack.conf")
+        self.assertEqual(conf["DEFAULT_BRANCH"], "develop")
+        self.assertIn("develop", conf["PROTECTED_BRANCHES"].split())
+        self.assertIn("branches: [develop]", (self.repo / ".github/workflows/ci.yml").read_text())
+
 
 class ExistingProject(TemplateCopy):
     def test_into_copies_the_baseline_without_overwriting(self):
@@ -124,6 +150,28 @@ class ExistingProject(TemplateCopy):
         self.assertTrue((target / "tools" / "guard.py").exists())
         self.assertTrue((target / "docs" / "fasttrack.md").exists())
         self.assertEqual(guard.parse_conf(target / "fasttrack.conf")["PROJECT_NAME"], "existing")
+
+    def test_into_with_no_other_options_works(self):
+        target = self.root / "bare"
+        target.mkdir()
+        run(["git", "init", "-q", "-b", "main"], target)
+        result = self.bootstrap("--into", str(target))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(guard.parse_conf(target / "fasttrack.conf")["BOOTSTRAPPED"], "yes")
+
+    def test_into_refuses_when_a_mechanism_file_would_clash(self):
+        target = self.root / "clash"
+        (target / "scripts").mkdir(parents=True)
+        run(["git", "init", "-q", "-b", "main"], target)
+        (target / "scripts" / "check.sh").write_text("echo ours\n")
+        result = self.bootstrap(
+            "--into", str(target), "--name", "clash", "--description", "C.",
+            "--owner", "o", "--stack", "python", "--yes",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("scripts/check.sh", result.stderr)
+        self.assertEqual((target / "scripts" / "check.sh").read_text(), "echo ours\n")
+        self.assertFalse((target / "tools" / "guard.py").exists())
 
 
 if __name__ == "__main__":
