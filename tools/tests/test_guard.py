@@ -249,7 +249,9 @@ class PushedWork(Repo):
 class ReviewBeforePullRequest(Repo):
     """A pull request opens only after the reviewer has read the branch: its last commit says so."""
 
-    REVIEWED = "Add calc\n\nThe owner asked.\n\nReviewed: ready, findings fixed"
+    # The shape an agent's commit has: the review line beside the usual trailers.
+    REVIEWED = ("Add calc\n\nThe owner asked.\n\nReviewed: ready, findings fixed\n"
+                "Co-Authored-By: A <a@example.com>")
 
     def create(self, command="gh pr create --fill"):
         return guard.check_agent_call("Bash", {"command": command}, cwd=str(self.repo))
@@ -280,6 +282,16 @@ class ReviewBeforePullRequest(Repo):
         self.commit("Add sub\n\nNot reviewed.", name="g.txt")
         self.assertEqual(self.create("gh pr create --head reviewed --fill"), [])
         self.assertRefused(self.create("gh pr create -H unreviewed --fill"))
+
+    def test_every_spelling_of_head_and_the_new_alias_are_checked(self):
+        self.git("switch", "-q", "-c", "unreviewed")
+        self.commit("Add sub\n\nNot reviewed.", name="g.txt")
+        self.git("switch", "-q", "-c", "reviewed")
+        self.commit(self.REVIEWED)
+        for command in ("gh pr create -Hunreviewed --fill", "gh pr create -H=unreviewed --fill",
+                        "gh pr create --head=me:unreviewed --fill", "gh pr new --fill -H unreviewed"):
+            self.assertRefused(self.create(command))
+        self.assertEqual(self.create("gh pr new --fill"), [], "the reviewed checked-out branch")
 
     def test_the_github_connector_is_held_to_the_same_rule(self):
         self.git("switch", "-q", "-c", "feature")
