@@ -4,6 +4,10 @@
 # The commands live in fasttrack.conf.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
+# A hook run from a git worktree exports GIT_DIR; a test's git command would then act on this
+# repository instead of its own throwaway one. From here on git finds the repository from the
+# working directory, as it does outside a hook.
+unset $(git rev-parse --local-env-vars)
 
 conf() {
   python3 tools/guard.py conf "$1"
