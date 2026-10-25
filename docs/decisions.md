@@ -217,9 +217,12 @@ the trailer.
 ### Alternatives rejected
 - Prose only, in AGENTS.md. It was already in CLAUDE.md and did not
   hold for one morning.
-- Branch protection requiring an approving review. The agent opens pull
-  requests from the owner's account, and GitHub does not let an author
-  approve their own pull request, so the owner could not merge at all.
+- Branch protection requiring an approving review, alone. scripts/
+  bootstrap.sh recommends it, and it stays the boundary for people. It
+  cannot see the agent's review: the agent opens pull requests from the
+  owner's account, an author cannot approve their own pull request, so on
+  a one-person repository the owner merges past the requirement as an
+  administrator, which is the quick merge this decision is about.
 - A file the reviewer writes, checked by the hook. The reviewer is
   read-only by design, and a file in the tree would need cleaning up.
 
@@ -237,6 +240,9 @@ moves into CI, where it can be checked rather than declared.
 - That `gh pr create` from another directory with `--repo` and a branch
   this clone does not have is rare: the hook refuses it, asking for a
   clone that has the branch.
+- Whether lpalokan/comfy-claude-mcp had the review requirement turned on
+  when #10 and #13 merged; if so, the owner merged past it.
+- That every git in use knows `--end-of-options` (git 2.24 and later).
 
 ## Convention history
 

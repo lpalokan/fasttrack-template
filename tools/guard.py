@@ -64,8 +64,9 @@ MERGED_BRANCH = (
 
 REVIEW = (
     "guard: open a pull request only after the reviewer has read the branch and its findings "
-    "are fixed. Then put a `Reviewed: <verdict>` trailer in the branch's last commit (amend it "
-    "if it is not pushed yet) and open the pull request. See AGENTS.md, 'GitHub workflow'."
+    "are fixed. Then put a `Reviewed: <verdict>` trailer in the branch's last commit, in the last "
+    "paragraph with the other trailers (amend it if it is not pushed yet), and open the pull "
+    "request. See AGENTS.md, 'GitHub workflow'."
 )
 REVIEW_UNKNOWN = (
     "guard: cannot find branch {branch} locally to check that it was reviewed. Open the pull "
@@ -255,9 +256,14 @@ def check_git(args, cwd, protected):
 
 def check_reviewed(ref, cwd):
     """Refusals unless the last commit of ref carries a Reviewed: trailer."""
-    result = subprocess.run(["git", "log", "-1", "--format=%B", ref, "--"], cwd=cwd,
-                            capture_output=True, text=True)
-    if result.returncode != 0:
+    # A branch wins over a tag of the same name; --end-of-options keeps a name like "--all" a name.
+    candidates = ["HEAD"] if ref == "HEAD" else [f"refs/heads/{ref}", ref]
+    for candidate in candidates:
+        result = subprocess.run(["git", "log", "-1", "--format=%B", "--end-of-options", candidate, "--"],
+                                cwd=cwd, capture_output=True, text=True)
+        if result.returncode == 0:
+            break
+    else:
         return [REVIEW_UNKNOWN.format(branch=ref)]
     _, trailers = split_trailers(result.stdout.strip().splitlines()[1:])
     return [] if any(re.match(r"Reviewed: \S", t) for t in trailers) else [REVIEW]
@@ -268,8 +274,9 @@ def pr_create_head(tokens):
     for i, token in enumerate(tokens):
         if token in ("--head", "-H") and i + 1 < len(tokens):
             return tokens[i + 1].split(":")[-1]
-        if token.startswith("--head="):
-            return token.split("=", 1)[1].split(":")[-1]
+        for prefix in ("--head=", "-H=", "-H"):
+            if token.startswith(prefix) and len(token) > len(prefix):
+                return token[len(prefix):].split(":")[-1]
     return "HEAD"
 
 
@@ -284,7 +291,7 @@ def check_agent_call(tool_name, tool_input, cwd=None, protected=DEFAULT_PROTECTE
                 reasons += check_git(tokens[1:], cwd, protected)
             elif program == "gh" and tokens[1:3] in (["pr", "merge"], ["pr", "close"]):
                 reasons.append(MERGE)
-            elif program == "gh" and tokens[1:3] == ["pr", "create"]:
+            elif program == "gh" and tokens[1:3] in (["pr", "create"], ["pr", "new"]):
                 reasons += check_reviewed(pr_create_head(tokens[3:]), cwd)
         return list(dict.fromkeys(reasons))
     if tool_name.endswith("create_pull_request"):
