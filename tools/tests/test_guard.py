@@ -246,6 +246,57 @@ class PushedWork(Repo):
         self.assertFalse(guard.extends_merged_head(str(self.repo), fresh, [unrelated]))
 
 
+class ReviewBeforePullRequest(Repo):
+    """A pull request opens only after the reviewer has read the branch: its last commit says so."""
+
+    REVIEWED = "Add calc\n\nThe owner asked.\n\nReviewed: ready, findings fixed"
+
+    def create(self, command="gh pr create --fill"):
+        return guard.check_agent_call("Bash", {"command": command}, cwd=str(self.repo))
+
+    def assertRefused(self, reasons):
+        self.assertTrue(any("Reviewed:" in r for r in reasons), reasons)
+
+    def test_a_branch_nobody_reviewed_cannot_open_a_pull_request(self):
+        self.git("switch", "-q", "-c", "feature")
+        self.commit("Add calc\n\nThe owner asked.")
+        self.assertRefused(self.create())
+
+    def test_a_reviewed_branch_can(self):
+        self.git("switch", "-q", "-c", "feature")
+        self.commit(self.REVIEWED)
+        self.assertEqual(self.create(), [])
+
+    def test_a_commit_after_the_review_needs_reviewing_too(self):
+        self.git("switch", "-q", "-c", "feature")
+        self.commit(self.REVIEWED)
+        self.commit("Add sub\n\nAfter the review.", name="g.txt")
+        self.assertRefused(self.create())
+
+    def test_the_branch_named_by_head_is_the_one_checked(self):
+        self.git("switch", "-q", "-c", "reviewed")
+        self.commit(self.REVIEWED)
+        self.git("switch", "-q", "-c", "unreviewed")
+        self.commit("Add sub\n\nNot reviewed.", name="g.txt")
+        self.assertEqual(self.create("gh pr create --head reviewed --fill"), [])
+        self.assertRefused(self.create("gh pr create -H unreviewed --fill"))
+
+    def test_the_github_connector_is_held_to_the_same_rule(self):
+        self.git("switch", "-q", "-c", "feature")
+        self.commit("Add calc\n\nThe owner asked.")
+        call = lambda: guard.check_agent_call("mcp__github__create_pull_request",
+                                              {"head": "feature", "base": "main", "title": "Add calc"},
+                                              cwd=str(self.repo))
+        self.assertRefused(call())
+        self.commit(self.REVIEWED, name="g.txt")
+        self.assertEqual(call(), [])
+
+    def test_the_review_line_counts_as_a_trailer(self):
+        body, trailers = guard.split_trailers(
+            ["The owner asked.", "", "Reviewed: ready", "Co-Authored-By: A <a@example.com>"])
+        self.assertEqual(trailers, ["Reviewed: ready", "Co-Authored-By: A <a@example.com>"])
+
+
 class EntryPoints(Repo):
     script = str(Path(__file__).resolve().parents[1] / "guard.py")
 
