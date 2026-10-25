@@ -269,14 +269,25 @@ def check_reviewed(ref, cwd):
     return [] if any(re.match(r"Reviewed: \S", t) for t in trailers) else [REVIEW]
 
 
+GH_PR_CREATE_VALUES = {
+    "-a", "--assignee", "-B", "--base", "-b", "--body", "-F", "--body-file", "-l", "--label",
+    "-m", "--milestone", "-p", "--project", "-R", "--repo", "--recover", "-r", "--reviewer",
+    "-T", "--template", "-t", "--title",
+}
+
+
 def pr_create_head(tokens):
     """The branch `gh pr create` would open from: its --head, else the checked-out branch."""
-    for i, token in enumerate(tokens):
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
         if token in ("--head", "-H") and i + 1 < len(tokens):
             return tokens[i + 1].split(":")[-1]
         for prefix in ("--head=", "-H=", "-H"):
             if token.startswith(prefix) and len(token) > len(prefix):
                 return token[len(prefix):].split(":")[-1]
+        # The value of another option, a title starting "-H" say, is not a flag.
+        i += 2 if token in GH_PR_CREATE_VALUES else 1
     return "HEAD"
 
 

@@ -292,6 +292,9 @@ class ReviewBeforePullRequest(Repo):
                         "gh pr create --head=me:unreviewed --fill", "gh pr new --fill -H unreviewed"):
             self.assertRefused(self.create(command))
         self.assertEqual(self.create("gh pr new --fill"), [], "the reviewed checked-out branch")
+        # An option's value that starts with -H is a title or a body, not a branch.
+        self.git("switch", "-q", "unreviewed")
+        self.assertRefused(self.create('gh pr create --title -Hreviewed --body "-Hreviewed"'))
 
     def test_the_github_connector_is_held_to_the_same_rule(self):
         self.git("switch", "-q", "-c", "feature")
