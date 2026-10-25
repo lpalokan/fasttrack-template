@@ -80,7 +80,6 @@ class AgentHookRefusals(unittest.TestCase):
             "git push -u origin feature",
             "git push origin feature:feature",
             "git commit -m 'Add parser' -m 'Because the input changed.'",
-            "gh pr create --fill",
             "gh pr view 12",
             "git branch new-feature",
             "git log --oneline -n 5",
@@ -91,7 +90,7 @@ class AgentHookRefusals(unittest.TestCase):
 
     def test_quoted_text_is_not_a_command(self):
         self.assertAllowed("git commit -m 'Explain; git branch -D was used' -m 'Why.'")
-        self.assertAllowed('gh pr create --body "Never run gh pr merge yourself"')
+        self.assertAllowed('gh pr comment 3 --body "Never run gh pr merge yourself"')
 
     def test_a_dry_run_push_is_allowed(self):
         self.assertAllowed("git push origin main --dry-run")
@@ -125,7 +124,8 @@ class AgentHookRefusals(unittest.TestCase):
         self.assertEqual(
             guard.check_agent_call("mcp__github__update_pull_request", {"pullNumber": 3, "title": "x"}), []
         )
-        self.assertEqual(guard.check_agent_call("mcp__github__create_pull_request", {}), [])
+        # Opening one is not a merge; whether it was reviewed is ReviewBeforePullRequest's.
+        self.assertNotIn(guard.MERGE, guard.check_agent_call("mcp__github__create_pull_request", {}))
 
 
 class CommitMessages(unittest.TestCase):
@@ -244,6 +244,72 @@ class PushedWork(Repo):
         fresh = self.commit("Start fresh\n\nWhy.", name="c.txt")
         unrelated = "f" * 40
         self.assertFalse(guard.extends_merged_head(str(self.repo), fresh, [unrelated]))
+
+
+class ReviewBeforePullRequest(Repo):
+    """A pull request opens only after the reviewer has read the branch: its last commit says so."""
+
+    # The shape an agent's commit has: the review line beside the usual trailers.
+    REVIEWED = ("Add calc\n\nThe owner asked.\n\nReviewed: ready, findings fixed\n"
+                "Co-Authored-By: A <a@example.com>")
+
+    def create(self, command="gh pr create --fill"):
+        return guard.check_agent_call("Bash", {"command": command}, cwd=str(self.repo))
+
+    def assertRefused(self, reasons):
+        self.assertTrue(any("Reviewed:" in r for r in reasons), reasons)
+
+    def test_a_branch_nobody_reviewed_cannot_open_a_pull_request(self):
+        self.git("switch", "-q", "-c", "feature")
+        self.commit("Add calc\n\nThe owner asked.")
+        self.assertRefused(self.create())
+
+    def test_a_reviewed_branch_can(self):
+        self.git("switch", "-q", "-c", "feature")
+        self.commit(self.REVIEWED)
+        self.assertEqual(self.create(), [])
+
+    def test_a_commit_after_the_review_needs_reviewing_too(self):
+        self.git("switch", "-q", "-c", "feature")
+        self.commit(self.REVIEWED)
+        self.commit("Add sub\n\nAfter the review.", name="g.txt")
+        self.assertRefused(self.create())
+
+    def test_the_branch_named_by_head_is_the_one_checked(self):
+        self.git("switch", "-q", "-c", "reviewed")
+        self.commit(self.REVIEWED)
+        self.git("switch", "-q", "-c", "unreviewed")
+        self.commit("Add sub\n\nNot reviewed.", name="g.txt")
+        self.assertEqual(self.create("gh pr create --head reviewed --fill"), [])
+        self.assertRefused(self.create("gh pr create -H unreviewed --fill"))
+
+    def test_every_spelling_of_head_and_the_new_alias_are_checked(self):
+        self.git("switch", "-q", "-c", "unreviewed")
+        self.commit("Add sub\n\nNot reviewed.", name="g.txt")
+        self.git("switch", "-q", "-c", "reviewed")
+        self.commit(self.REVIEWED)
+        for command in ("gh pr create -Hunreviewed --fill", "gh pr create -H=unreviewed --fill",
+                        "gh pr create --head=me:unreviewed --fill", "gh pr new --fill -H unreviewed"):
+            self.assertRefused(self.create(command))
+        self.assertEqual(self.create("gh pr new --fill"), [], "the reviewed checked-out branch")
+        # An option's value that starts with -H is a title or a body, not a branch.
+        self.git("switch", "-q", "unreviewed")
+        self.assertRefused(self.create('gh pr create --title -Hreviewed --body "-Hreviewed"'))
+
+    def test_the_github_connector_is_held_to_the_same_rule(self):
+        self.git("switch", "-q", "-c", "feature")
+        self.commit("Add calc\n\nThe owner asked.")
+        call = lambda: guard.check_agent_call("mcp__github__create_pull_request",
+                                              {"head": "feature", "base": "main", "title": "Add calc"},
+                                              cwd=str(self.repo))
+        self.assertRefused(call())
+        self.commit(self.REVIEWED, name="g.txt")
+        self.assertEqual(call(), [])
+
+    def test_the_review_line_counts_as_a_trailer(self):
+        body, trailers = guard.split_trailers(
+            ["The owner asked.", "", "Reviewed: ready", "Co-Authored-By: A <a@example.com>"])
+        self.assertEqual(trailers, ["Reviewed: ready", "Co-Authored-By: A <a@example.com>"])
 
 
 class EntryPoints(Repo):

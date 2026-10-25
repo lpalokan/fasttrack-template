@@ -51,8 +51,12 @@ prompts (`$`). People paste them, and a comment pasted into a shell fails.
 
 - The agent never merges or closes pull requests. It opens them; the owner
   reads the diff and merges. Speed is not the goal; a reader is.
-- Done means the branch is pushed, scripts/check.sh is green, and the pull
-  request is open. Open it without asking.
+- Done means, in this order: the reviewer has read the branch and its
+  findings are fixed; the branch's last commit carries a `Reviewed:`
+  trailer with the verdict; the branch is pushed, scripts/check.sh is
+  green, and the pull request is open with the review's outcome in it.
+  Open it without asking. A pull request opened before its review looks
+  finished, and gets merged before the review lands (DEC-6).
 - Never add commits to a branch after its pull request has merged. They
   reach nobody. Start a new branch from the default branch.
 - A pull request's state is read, not remembered. Check GitHub before

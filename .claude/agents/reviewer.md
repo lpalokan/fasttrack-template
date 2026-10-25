@@ -24,6 +24,7 @@ Run `scripts/check.sh` and include its last lines.
 
 Report:
 
-- Verdict: ready or not ready.
+- Verdict: ready or not ready, in one line the author can copy into the
+  `Reviewed:` trailer once the findings are fixed.
 - Findings: one per line, `severity file:line what`, with severity one of
   blocking, should, nit.

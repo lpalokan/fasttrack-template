@@ -18,6 +18,7 @@ table whenever a rule or a mechanism changes.
 | A new test must fail on the old code | bites, in the pre-push hook and in CI | Bites |
 | One definition of green | scripts/check.sh: pre-push with `--fast`, CI in full | The guard's own tests run first in every check |
 | Tests never act on the repository they are checked in | tools/tests/hook_env.py, imported first by every test module there, and scripts/check.sh drop the variables `git rev-parse --local-env-vars` lists, which a hook in a worktree inherits | HookEnvironment, for the test modules; the unset in check.sh is not tested |
+| A pull request opens only after the reviewer has read the branch | agent hook, shell (`gh pr create`) and GitHub connector: the branch's last commit must carry a `Reviewed:` trailer | ReviewBeforePullRequest; the trailer is the author's word that a review ran, not proof of it |
 | Git hooks are on in every clone | SessionStart hook runs scripts/setup.sh | Not tested |
 
 ## Rules with no mechanism
@@ -55,6 +56,13 @@ Close one when it bites you, and move it to the table above.
   tree.
 - The merged-branch check needs `gh` with access to GitHub's API. Where that
   is blocked, as in some cloud sessions, it allows the push.
+- The review guard (DEC-6) reads the branch tip in the session's working
+  directory. It does not see `gh api` calls that create a pull request,
+  `bash -c 'gh pr create'`, or `cd other-clone && gh pr create` (it checks
+  the clone the session started in), and it reads the local tip, not the
+  pushed one: a trailer amended locally and never pushed passes while the
+  pull request opens on a commit without it. The trailer itself is the
+  author's word that a review ran.
 - The agent hook reads commands as text. A command run from a script file,
   or written in a form it does not parse, passes. Branch protection is the
   boundary; the hook is a nudge (docs/decisions.md, DEC-3).
