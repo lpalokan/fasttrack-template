@@ -13,15 +13,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import hook_env  # noqa: E402,F401  (drops the variables that would aim git at the real repository)
 import guard  # noqa: E402
-
-# A hook run from a git worktree exports GIT_DIR, which would point every git command in these
-# tests at the real repository instead of their own throwaway ones. Git lists the variables
-# that locate a repository; none of them may reach the tests.
-for _name in subprocess.run(["git", "rev-parse", "--local-env-vars"], capture_output=True, text=True,
-                            check=True).stdout.split():
-    os.environ.pop(_name, None)
 
 
 def bash(command, **extra):
@@ -454,6 +449,30 @@ class HookEnvironment(unittest.TestCase):
             after = (git("config", "--local", "--list"), git("for-each-ref"))
         self.assertEqual(after, before, result.stderr[-2000:])
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+
+    @unittest.skipIf(guard.parse_conf(Path(__file__).resolve().parents[2] / "fasttrack.conf").get("BOOTSTRAPPED")
+                     == "yes", "the bootstrap tests run only in the template")
+    def test_the_bootstrap_tests_run_alone_leave_it_alone_too(self):
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        with tempfile.TemporaryDirectory() as tmp:
+            sentinel = Path(tmp) / "sentinel"
+
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=sentinel, env=clean, check=True,
+                                      capture_output=True, text=True).stdout
+
+            sentinel.mkdir()
+            git("init", "-q", "-b", "main")
+            git("-c", "user.name=Owner", "-c", "user.email=owner@example.com",
+                "commit", "-q", "--allow-empty", "-m", "Start")
+            before = (git("config", "--local", "--list"), git("for-each-ref"))
+            result = subprocess.run(
+                [sys.executable, "-m", "unittest", str(Path(__file__).with_name("test_bootstrap.py"))],
+                cwd=Path(__file__).resolve().parents[2],
+                env={**clean, "GIT_DIR": str(sentinel / ".git")}, capture_output=True, text=True,
+            )
+            after = (git("config", "--local", "--list"), git("for-each-ref"))
+        self.assertEqual(after, before, result.stderr[-2000:])
 
 
 if __name__ == "__main__":

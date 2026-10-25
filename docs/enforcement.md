@@ -17,7 +17,7 @@ table whenever a rule or a mechanism changes.
 | Commit subject imperative and under 70 characters, a body, no model name | commit-msg hook; CI, for every commit in the pull request | CommitMessages |
 | A new test must fail on the old code | bites, in the pre-push hook and in CI | Bites |
 | One definition of green | scripts/check.sh: pre-push with `--fast`, CI in full | The guard's own tests run first in every check |
-| Tests never act on the repository they are checked in | scripts/check.sh and the guard tests drop the variables `git rev-parse --local-env-vars` lists, which a hook in a worktree inherits | HookEnvironment |
+| Tests never act on the repository they are checked in | tools/tests/hook_env.py, imported first by every test module there, and scripts/check.sh drop the variables `git rev-parse --local-env-vars` lists, which a hook in a worktree inherits | HookEnvironment, for the test modules; the unset in check.sh is not tested |
 | Git hooks are on in every clone | SessionStart hook runs scripts/setup.sh | Not tested |
 
 ## Rules with no mechanism
