@@ -13,5 +13,7 @@ particular to Claude Code. Keeping a copy here would drift.
   shell, whatever the prompt says. The agent hook also refuses closing one
   through the connector.
 - Roles live in .claude/agents/: test-author, implementer, reviewer, editor.
-  Run the reviewer on the branch before opening a pull request.
+- The agent hook refuses opening a pull request, through the shell or the
+  GitHub connector, until the branch's last commit carries a `Reviewed:`
+  trailer (AGENTS.md, 'GitHub workflow').
 - In a fresh fork, /bootstrap sets the project up.

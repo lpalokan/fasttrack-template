@@ -62,6 +62,16 @@ MERGED_BRANCH = (
     "nobody. Start a new branch from the default branch. See AGENTS.md, 'GitHub workflow'."
 )
 
+REVIEW = (
+    "guard: open a pull request only after the reviewer has read the branch and its findings "
+    "are fixed. Then put a `Reviewed: <verdict>` trailer in the branch's last commit (amend it "
+    "if it is not pushed yet) and open the pull request. See AGENTS.md, 'GitHub workflow'."
+)
+REVIEW_UNKNOWN = (
+    "guard: cannot find branch {branch} locally to check that it was reviewed. Open the pull "
+    "request from a clone that has it. See AGENTS.md, 'GitHub workflow'."
+)
+
 DEFAULT_PROTECTED = ("main", "master")
 ZERO_SHA = "0" * 40
 
@@ -243,6 +253,26 @@ def check_git(args, cwd, protected):
     return reasons
 
 
+def check_reviewed(ref, cwd):
+    """Refusals unless the last commit of ref carries a Reviewed: trailer."""
+    result = subprocess.run(["git", "log", "-1", "--format=%B", ref, "--"], cwd=cwd,
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        return [REVIEW_UNKNOWN.format(branch=ref)]
+    _, trailers = split_trailers(result.stdout.strip().splitlines()[1:])
+    return [] if any(re.match(r"Reviewed: \S", t) for t in trailers) else [REVIEW]
+
+
+def pr_create_head(tokens):
+    """The branch `gh pr create` would open from: its --head, else the checked-out branch."""
+    for i, token in enumerate(tokens):
+        if token in ("--head", "-H") and i + 1 < len(tokens):
+            return tokens[i + 1].split(":")[-1]
+        if token.startswith("--head="):
+            return token.split("=", 1)[1].split(":")[-1]
+    return "HEAD"
+
+
 def check_agent_call(tool_name, tool_input, cwd=None, protected=DEFAULT_PROTECTED):
     """Return the refusals for one tool call; an empty list allows it."""
     tool_input = tool_input or {}
@@ -254,7 +284,11 @@ def check_agent_call(tool_name, tool_input, cwd=None, protected=DEFAULT_PROTECTE
                 reasons += check_git(tokens[1:], cwd, protected)
             elif program == "gh" and tokens[1:3] in (["pr", "merge"], ["pr", "close"]):
                 reasons.append(MERGE)
+            elif program == "gh" and tokens[1:3] == ["pr", "create"]:
+                reasons += check_reviewed(pr_create_head(tokens[3:]), cwd)
         return list(dict.fromkeys(reasons))
+    if tool_name.endswith("create_pull_request"):
+        return check_reviewed(str(tool_input.get("head") or "HEAD").split(":")[-1], cwd)
     if tool_name.endswith("merge_pull_request"):
         return [MERGE]
     if tool_name.endswith("update_pull_request") and tool_input.get("state") == "closed":
@@ -289,7 +323,7 @@ MODEL_NAME = re.compile(
 # Trailer keys are hyphenated (Co-Authored-By, Signed-off-by) or one of a few
 # known words, so a body line such as "Why: ..." still counts as a body.
 TRAILER = re.compile(
-    r"^(?:[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+|Characterises|Fixes|Closes|Resolves|Refs): \S"
+    r"^(?:[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+|Characterises|Fixes|Closes|Resolves|Refs|Reviewed): \S"
 )
 SCISSORS = re.compile(r"^# -+ >8 -+$")
 

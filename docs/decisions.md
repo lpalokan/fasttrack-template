@@ -23,6 +23,7 @@ place.
 | DEC-3 One guard module, three entry points | Decided |
 | DEC-4 Model names stay out of commit text | Decided |
 | DEC-5 The bootstrap tests run only in the template | Decided |
+| DEC-6 A pull request opens only after its review | Decided |
 
 Statuses: Open, Proposed, Decided, Decided by measurement, Amended,
 Withdrawn.
@@ -188,7 +189,60 @@ edit.
 ### What would reverse it
 Projects that keep re-running bootstrap after changing it.
 
+## DEC-6 — A pull request opens only after its review
+
+Decided 2026-10-25 by the template's owner, in conversation, after an
+incident in lpalokan/comfy-claude-mcp. Replaces the prose rule in
+CLAUDE.md ("Run the reviewer on the branch before opening a pull
+request").
+
+### What was wrong
+On 2026-10-25 a session in lpalokan/comfy-claude-mcp opened every pull
+request (#7 to #13) before its reviewer had read the branch. AGENTS.md
+said "Done means ... the pull request is open", and only CLAUDE.md asked
+for the review first. Two pull requests merged 36 and 54 seconds after
+opening, before their reviews came back; both reviews found real
+errors that then needed follow-up pull requests.
+
+### The decision
+The agent hook refuses `gh pr create`, and the GitHub connector's create,
+unless the last commit of the branch being opened carries a
+`Reviewed: <verdict>` trailer. The author adds it after the reviewer's
+findings are fixed, in the fix commit or by amending the last commit
+while it is unpushed; a commit added after the review needs its own.
+AGENTS.md's "Done means" lists the steps in that order, the pull request
+template has a Review section, and the reviewer phrases its verdict for
+the trailer.
+
+### Alternatives rejected
+- Prose only, in AGENTS.md. It was already in CLAUDE.md and did not
+  hold for one morning.
+- Branch protection requiring an approving review. The agent opens pull
+  requests from the owner's account, and GitHub does not let an author
+  approve their own pull request, so the owner could not merge at all.
+- A file the reviewer writes, checked by the hook. The reviewer is
+  read-only by design, and a file in the tree would need cleaning up.
+
+### What it costs, stated plainly
+One trailer line per pull request, and a refusal when it is missing.
+The trailer is the author's word that a review ran: it stops a
+forgotten review, not a skipped one written up as done.
+
+### What would reverse it
+Refusals that block legitimate pull requests often (a pull request from
+a branch that is not checked out locally, say), or a review step that
+moves into CI, where it can be checked rather than declared.
+
+### Unverified
+- That `gh pr create` from another directory with `--repo` and a branch
+  this clone does not have is rare: the hook refuses it, asking for a
+  clone that has the branch.
+
 ## Convention history
 
 The incident behind each rule in AGENTS.md, once the rule has one. Add a
 line when a rule is added or changed: date, rule, incident, entry.
+
+- 2026-10-25: a pull request opens only after its review (AGENTS.md, 'GitHub
+  workflow'). Two pull requests in lpalokan/comfy-claude-mcp merged before
+  their reviews came back. DEC-6.

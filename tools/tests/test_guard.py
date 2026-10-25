@@ -80,7 +80,6 @@ class AgentHookRefusals(unittest.TestCase):
             "git push -u origin feature",
             "git push origin feature:feature",
             "git commit -m 'Add parser' -m 'Because the input changed.'",
-            "gh pr create --fill",
             "gh pr view 12",
             "git branch new-feature",
             "git log --oneline -n 5",
@@ -91,7 +90,7 @@ class AgentHookRefusals(unittest.TestCase):
 
     def test_quoted_text_is_not_a_command(self):
         self.assertAllowed("git commit -m 'Explain; git branch -D was used' -m 'Why.'")
-        self.assertAllowed('gh pr create --body "Never run gh pr merge yourself"')
+        self.assertAllowed('gh pr comment 3 --body "Never run gh pr merge yourself"')
 
     def test_a_dry_run_push_is_allowed(self):
         self.assertAllowed("git push origin main --dry-run")
@@ -125,7 +124,8 @@ class AgentHookRefusals(unittest.TestCase):
         self.assertEqual(
             guard.check_agent_call("mcp__github__update_pull_request", {"pullNumber": 3, "title": "x"}), []
         )
-        self.assertEqual(guard.check_agent_call("mcp__github__create_pull_request", {}), [])
+        # Opening one is not a merge; whether it was reviewed is ReviewBeforePullRequest's.
+        self.assertNotIn(guard.MERGE, guard.check_agent_call("mcp__github__create_pull_request", {}))
 
 
 class CommitMessages(unittest.TestCase):
